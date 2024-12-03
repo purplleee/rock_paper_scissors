@@ -16,27 +16,16 @@ class RockPaperScissorsClient:
                 response = self.client_socket.recv(1024).decode()
                 print(response)
                 
-                # Check for specific prompts
-                if "Do you want to play again?" in response:
-                    # Prompt for play again
-                    play_again = input("").strip().lower()
-                    self.client_socket.send(play_again.encode())
-                    
-                    # Exit if not playing again
-                    if play_again != 'yes':
-                        print("Thanks for playing!")
-                        return
-                
                 # Check for move prompt
-                elif "Enter your choice" in response:
+                if "enter your choice" in response.lower():
                     # Get and send player's move
                     move = input("").strip()
                     self.client_socket.send(move.encode())
                 
-                # Check for game over message
+                # Check for game over message and exit
                 elif "Game Over" in response:
-                    # Option to exit or continue
-                    print("Game session ended.")
+                    print("Thanks for playing!")
+                    return
         
         except ConnectionRefusedError:
             print("Unable to connect to the server.")
