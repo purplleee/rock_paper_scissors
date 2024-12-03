@@ -11,34 +11,37 @@ class RockPaperScissorsClient:
         try:
             self.client_socket.connect((self.host, self.port))
             
-            # Receive and display game instructions
-            instructions = self.client_socket.recv(1024).decode()
-            print(instructions)
-            
-            # Play through the game series
             while True:
-                # Get and send player's move
-                move = input("").strip()
-                self.client_socket.send(move.encode())
-                
-                # Check for server messages
+                # Receive and display server messages
                 response = self.client_socket.recv(1024).decode()
                 print(response)
                 
-                # Check if game is over
-                if "Game Over" in response:
-                    break
+                # Check for specific prompts
+                if "Do you want to play again?" in response:
+                    # Prompt for play again
+                    play_again = input("").strip().lower()
+                    self.client_socket.send(play_again.encode())
+                    
+                    # Exit if not playing again
+                    if play_again != 'yes':
+                        print("Thanks for playing!")
+                        return
                 
-                # Check for additional instructions
-                if "Invalid move" in response:
-                    continue
+                # Check for move prompt
+                elif "Enter your choice" in response:
+                    # Get and send player's move
+                    move = input("").strip()
+                    self.client_socket.send(move.encode())
                 
-        except socket.timeout:
-            print("Connection timed out.")
-        except ConnectionResetError:
-            print("Connection was closed by the server.")
+                # Check for game over message
+                elif "Game Over" in response:
+                    # Option to exit or continue
+                    print("Game session ended.")
+        
+        except ConnectionRefusedError:
+            print("Unable to connect to the server.")
         except Exception as e:
-            print(f"Connection error: {e}")
+            print(f"An error occurred: {e}")
         finally:
             self.client_socket.close()
 

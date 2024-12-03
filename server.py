@@ -16,11 +16,45 @@ class RockPaperScissorsServer:
         self.MAX_ROUNDS = 3  # Best of 3 rounds
 
     def start(self):
+        while True:
+            print("Waiting for players to connect...")
+            self.reset_game_state()
+            self.wait_for_players()
+            
+            # If fewer than 2 players, restart waiting
+            if len(self.clients) < 2:
+                continue
+            
+            # Play game series
+            self.play_game_series()
+            
+            # Ask if players want to play again
+            try:
+                if not self.ask_play_again():
+                    break
+            except Exception as e:
+                print(f"Error in play again phase: {e}")
+                break
+
+    def reset_game_state(self):
+        # Close existing client connections
+        for client in self.clients:
+            try:
+                client.close()
+            except:
+                pass
+        
+        self.clients.clear()
+        self.moves.clear()
+        self.scores = {"Player1": 0, "Player2": 0}
+        self.round = 0
+
+    def wait_for_players(self):
         self.server_socket.listen(2)
         print(f"Server listening on {self.host}:{self.port}")
         
         # Set a timeout for waiting for players
-        self.server_socket.settimeout(60)  # 60 seconds timeout
+        self.server_socket.settimeout(120)  # 2 minutes timeout
         
         try:
             while len(self.clients) < 2:
@@ -29,25 +63,30 @@ class RockPaperScissorsServer:
                     print(f"Connection from {address}")
                     self.clients.append(client_socket)
                     
-                    # Send choice instructions to client
-                    choice_instructions = (
-                        "Welcome to Rock-Paper-Scissors!\n"
-                        "Choose your move:\n"
+                    # Send welcome and instructions
+                    welcome_msg = (
+                        "Welcome to Rock-Paper-Scissors Multiplayer!\n"
+                        "Game Rules:\n"
+                        "- Best of 3 rounds\n"
+                        "- Choose your move:\n"
                         "1 - Rock\n"
                         "2 - Paper\n"
                         "3 - Scissors\n"
-                        "Enter your choice (1/2/3): "
+                        "Waiting for another player to join...\n"
                     )
-                    client_socket.send(choice_instructions.encode())
+                    client_socket.send(welcome_msg.encode())
+                    
+                    # If two players have joined, send ready message
+                    if len(self.clients) == 2:
+                        ready_msg = "Both players connected! Let's start the game!\n"
+                        for client in self.clients:
+                            client.send(ready_msg.encode())
+                
                 except socket.timeout:
-                    print("Timeout waiting for players. Closing server.")
+                    print("Timeout waiting for players.")
                     return
         except Exception as e:
             print(f"Error accepting connections: {e}")
-            return
-
-        # Start game session with connected clients
-        self.play_game_series()
 
     def play_game_series(self):
         try:
@@ -57,6 +96,11 @@ class RockPaperScissorsServer:
                 
                 # Reset moves for this round
                 self.moves.clear()
+                
+                # Send round start message
+                round_start_msg = f"\n--- Round {self.round} ---\n"
+                for client in self.clients:
+                    client.send(round_start_msg.encode())
                 
                 # Receive moves from both clients
                 round_results = self.play_single_round()
@@ -76,14 +120,21 @@ class RockPaperScissorsServer:
         
         except Exception as e:
             print(f"Error during game series: {e}")
-        finally:
-            # Close connections
-            for client in self.clients:
-                client.close()
+            raise  # Re-raise to propagate the error
 
     def play_single_round(self):
         for i, client in enumerate(self.clients):
             try:
+                # Prompt for move
+                move_prompt = (
+                    f"Player {i+1}, choose your move:\n"
+                    "1 - Rock\n"
+                    "2 - Paper\n"
+                    "3 - Scissors\n"
+                    "Enter your choice (1/2/3): "
+                )
+                client.send(move_prompt.encode())
+                
                 # Set a timeout for receiving move
                 client.settimeout(30)  # 30 seconds to make a move
                 move = client.recv(1024).decode().strip()
@@ -155,10 +206,45 @@ class RockPaperScissorsServer:
         else:
             return "Game Over! The series is a tie!"
 
+    def ask_play_again(self):
+        # Validate that we have active client connections
+        valid_clients = []
+        for client in self.clients:
+            try:
+                # Send play again prompt
+                play_again_msg = (
+                    "\nDo you want to play again? (yes/no)\n"
+                    "Enter your choice: "
+                )
+                client.send(play_again_msg.encode())
+                valid_clients.append(client)
+            except:
+                print("A client connection is no longer valid.")
+        
+        # Update clients list with valid connections
+        self.clients = valid_clients
+        
+        # If no valid clients, return False
+        if len(self.clients) < 2:
+            print("Not enough players to continue.")
+            return False
+        
+        # Wait for responses
+        responses = []
+        for i, client in enumerate(self.clients):
+            try:
+                response = client.recv(1024).decode().strip().lower()
+                responses.append(response)
+            except Exception as e:
+                print(f"Error receiving play again response from Player{i+1}: {e}")
+                return False
+        
+        # Check if both players want to continue
+        return all(resp == 'yes' for resp in responses)
+
 def main():
     server = RockPaperScissorsServer()
     server.start()
 
 if __name__ == "__main__":
     main()
-
