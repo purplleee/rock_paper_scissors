@@ -1,5 +1,5 @@
-# Client Code
 import socket
+import time
 
 class RockPaperScissorsClient:
     def __init__(self, host='localhost', port=12345):
@@ -15,21 +15,28 @@ class RockPaperScissorsClient:
             instructions = self.client_socket.recv(1024).decode()
             print(instructions)
             
-            # Get and send player's move
+            # Play through the game series
             while True:
+                # Get and send player's move
                 move = input("").strip()
                 self.client_socket.send(move.encode())
                 
-                # Check for any server messages (like invalid move)
-                result = self.client_socket.recv(1024).decode()
-                if result != "":
-                    print(result)
+                # Check for server messages
+                response = self.client_socket.recv(1024).decode()
+                print(response)
+                
+                # Check if game is over
+                if "Game Over" in response:
                     break
-            
-            # Receive final game result
-            final_result = self.client_socket.recv(1024).decode()
-            print(final_result)
-            
+                
+                # Check for additional instructions
+                if "Invalid move" in response:
+                    continue
+                
+        except socket.timeout:
+            print("Connection timed out.")
+        except ConnectionResetError:
+            print("Connection was closed by the server.")
         except Exception as e:
             print(f"Connection error: {e}")
         finally:
