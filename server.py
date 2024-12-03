@@ -33,13 +33,17 @@ class RockPaperScissorsServer:
         shutdown_msg = "Server is shutting down. Game terminated.".encode()
         for client in self.clients:
             try:
+                # Attempt to send shutdown message
                 client.send(shutdown_msg)
+                # Properly shutdown and close the client socket
+                client.shutdown(socket.SHUT_RDWR)
                 client.close()
             except:
                 pass
         
         # Close server socket
         try:
+            self.server_socket.shutdown(socket.SHUT_RDWR)
             self.server_socket.close()
         except:
             pass

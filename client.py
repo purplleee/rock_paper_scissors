@@ -1,6 +1,7 @@
 import socket
 import sys
 import threading
+import time
 
 class RockPaperScissorsClient:
     def __init__(self, host='localhost', port=12345):
@@ -8,19 +9,20 @@ class RockPaperScissorsClient:
         self.port = port
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.is_running = True
+        self.game_over = False
 
     def receive_messages(self):
         """
         Continuously receive messages from the server
         """
         try:
-            while self.is_running:
+            while not self.game_over and self.is_running:
                 try:
                     # Set a short timeout to check is_running
                     self.client_socket.settimeout(1)
                     response = self.client_socket.recv(1024).decode()
                     
-                    # Check for server shutdown
+                    # Check for server shutdown or empty message
                     if not response:
                         print("\nConnection to server lost.")
                         self.shutdown()
@@ -28,8 +30,9 @@ class RockPaperScissorsClient:
                     
                     print(response)
                     
-                    # Check for game over message and exit
+                    # Check for game over message
                     if "Game Over" in response or "Server is shutting down" in response:
+                        self.game_over = True
                         self.shutdown()
                         break
                 
@@ -48,11 +51,11 @@ class RockPaperScissorsClient:
         Handle sending messages to the server
         """
         try:
-            while self.is_running:
+            while not self.game_over and self.is_running:
                 try:
                     # Check for move prompt
                     move = input("").strip()
-                    if not self.is_running:
+                    if not self.is_running or self.game_over:
                         break
                     self.client_socket.send(move.encode())
                 except Exception as e:
@@ -70,13 +73,18 @@ class RockPaperScissorsClient:
             return
         
         self.is_running = False
+        self.game_over = True
+        
         try:
+            self.client_socket.shutdown(socket.SHUT_RDWR)
             self.client_socket.close()
         except:
             pass
         
         print("\nThanks for playing! Client shutting down.")
-        sys.exit(0)
+        # Use os._exit to immediately terminate all threads
+        import os
+        os._exit(0)
 
     def connect(self):
         try:
@@ -86,13 +94,20 @@ class RockPaperScissorsClient:
             receive_thread = threading.Thread(target=self.receive_messages)
             send_thread = threading.Thread(target=self.send_messages)
             
+            # Set threads as daemon so they'll terminate when main thread ends
+            receive_thread.daemon = True
+            send_thread.daemon = True
+            
             # Start threads
             receive_thread.start()
             send_thread.start()
             
-            # Wait for threads to complete
-            receive_thread.join()
-            send_thread.join()
+            # Wait for threads to complete or game to end
+            while not self.game_over and self.is_running:
+                time.sleep(0.1)
+            
+            # Ensure shutdown
+            self.shutdown()
         
         except ConnectionRefusedError:
             print("Unable to connect to the server.")
