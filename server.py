@@ -1,6 +1,8 @@
 import socket
 import threading
 import time
+import signal
+import sys
 
 class RockPaperScissorsServer:
     def __init__(self, host='localhost', port=12345):
@@ -14,10 +16,43 @@ class RockPaperScissorsServer:
         self.scores = {"Player1": 0, "Player2": 0}
         self.round = 0
         self.MAX_ROUNDS = 3  # Best of 3 rounds
+        self.is_running = True
+        
+        # Setup signal handler for graceful shutdown
+        signal.signal(signal.SIGINT, self.shutdown)
+        signal.signal(signal.SIGTERM, self.shutdown)
+
+    def shutdown(self, signum=None, frame=None):
+        """
+        Gracefully shutdown the server and all client connections
+        """
+        print("\nShutting down the server...")
+        self.is_running = False
+        
+        # Send shutdown message to all clients
+        shutdown_msg = "Server is shutting down. Game terminated.".encode()
+        for client in self.clients:
+            try:
+                client.send(shutdown_msg)
+                client.close()
+            except:
+                pass
+        
+        # Close server socket
+        try:
+            self.server_socket.close()
+        except:
+            pass
+        
+        print("Server shut down complete.")
+        sys.exit(0)
 
     def start(self):
         try:
-            while True:
+            print(f"Server started on {self.host}:{self.port}")
+            print("Press Ctrl+C to shutdown the server.")
+            
+            while self.is_running:
                 print("Waiting for players to connect...")
                 self.reset_game_state()
                 self.wait_for_players()
@@ -30,16 +65,15 @@ class RockPaperScissorsServer:
                 # Play game series
                 self.play_game_series()
                 
-                # Break the loop after game series
-                break
+                # Break the loop if server is no longer running
+                if not self.is_running:
+                    break
         except Exception as e:
-            print(f"An error occurred: {e}")
+            if self.is_running:
+                print(f"An error occurred: {e}")
         finally:
-            # Cleanup server socket
-            try:
-                self.server_socket.close()
-            except:
-                pass
+            # Ensure cleanup happens
+            self.shutdown()
 
     def reset_game_state(self):
         # Close existing client connections
@@ -55,15 +89,20 @@ class RockPaperScissorsServer:
         self.round = 0
 
     def wait_for_players(self):
+        # Skip if server is no longer running
+        if not self.is_running:
+            return
+        
         self.server_socket.listen(2)
         print(f"Server listening on {self.host}:{self.port}")
         
         # Set a timeout for waiting for players
-        self.server_socket.settimeout(120)  # 2 minutes timeout
+        self.server_socket.settimeout(1)  # Short timeout to check is_running frequently
         
         try:
-            while len(self.clients) < 2:
+            while len(self.clients) < 2 and self.is_running:
                 try:
+                    # Use a short timeout to allow checking is_running
                     client_socket, address = self.server_socket.accept()
                     print(f"Connection from {address}")
                     self.clients.append(client_socket)
@@ -85,14 +124,15 @@ class RockPaperScissorsServer:
                             client.send(ready_msg.encode())
                 
                 except socket.timeout:
-                    print("Timeout waiting for players.")
-                    return
+                    # This allows checking is_running periodically
+                    continue
         except Exception as e:
-            print(f"Error accepting connections: {e}")
+            if self.is_running:
+                print(f"Error accepting connections: {e}")
 
     def play_game_series(self):
         try:
-            while self.round < self.MAX_ROUNDS:
+            while self.round < self.MAX_ROUNDS and self.is_running:
                 # Check if there's an overall winner
                 if max(self.scores.values()) >= 2:
                     break
@@ -118,11 +158,13 @@ class RockPaperScissorsServer:
                     self.moves["Player2"]
                 )
             
-            # Send final game result
-            self.get_series_winner()
+            # Send final game result if server is still running
+            if self.is_running:
+                self.get_series_winner()
         
         except Exception as e:
-            print(f"Error during game series: {e}")
+            if self.is_running:
+                print(f"Error during game series: {e}")
 
     def collect_valid_moves(self):
         for i, client in enumerate(self.clients):
