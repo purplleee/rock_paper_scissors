@@ -93,6 +93,10 @@ class RockPaperScissorsServer:
     def play_game_series(self):
         try:
             while self.round < self.MAX_ROUNDS:
+                # Check if there's an overall winner
+                if max(self.scores.values()) >= 2:
+                    break
+                
                 self.round += 1
                 print(f"Starting Round {self.round}")
                 
@@ -104,12 +108,15 @@ class RockPaperScissorsServer:
                 for client in self.clients:
                     client.send(round_start_msg.encode())
                 
-                # Receive moves from both clients
-                self.play_single_round()
+                # Receive and validate moves from both clients
+                if not self.collect_valid_moves():
+                    continue  # If moves are invalid, replay the round
                 
-                # Check if series is over
-                if max(self.scores.values()) >= 2:
-                    break
+                # Determine round winner
+                self.determine_round_winner(
+                    self.moves["Player1"], 
+                    self.moves["Player2"]
+                )
             
             # Send final game result
             self.get_series_winner()
@@ -117,35 +124,34 @@ class RockPaperScissorsServer:
         except Exception as e:
             print(f"Error during game series: {e}")
 
-    def play_single_round(self):
+    def collect_valid_moves(self):
         for i, client in enumerate(self.clients):
-            try:
-                # Prompt for move (simplified prompt)
-                move_prompt = f"Player {i+1}, enter your choice (1/2/3): "
-                client.send(move_prompt.encode())
+            while True:
+                try:
+                    # Prompt for move
+                    move_prompt = f"Player {i+1}, enter your choice (1/2/3): "
+                    client.send(move_prompt.encode())
+                    
+                    # Set a timeout for receiving move
+                    client.settimeout(30)  # 30 seconds to make a move
+                    move = client.recv(1024).decode().strip()
+                    
+                    # Validate move
+                    if self.validate_move(move):
+                        self.moves[f"Player{i+1}"] = move
+                        break
+                    else:
+                        # Send invalid move message and continue loop
+                        client.send("Invalid move. Please choose 1, 2, or 3.".encode())
                 
-                # Set a timeout for receiving move
-                client.settimeout(30)  # 30 seconds to make a move
-                move = client.recv(1024).decode().strip()
-                
-                # Validate move
-                if not self.validate_move(move):
-                    client.send("Invalid move. Please choose 1, 2, or 3.".encode())
-                    return
-                
-                self.moves[f"Player{i+1}"] = move
-            except socket.timeout:
-                print(f"Player{i+1} took too long to move")
-                return
-            except Exception as e:
-                print(f"Error receiving move from Player{i+1}: {e}")
-                return
+                except socket.timeout:
+                    print(f"Player{i+1} took too long to move")
+                    return False
+                except Exception as e:
+                    print(f"Error receiving move from Player{i+1}: {e}")
+                    return False
         
-        # Determine round winner
-        self.determine_round_winner(
-            self.moves["Player1"], 
-            self.moves["Player2"]
-        )
+        return True
 
     def validate_move(self, move):
         # Check if move is a valid number between 1 and 3
