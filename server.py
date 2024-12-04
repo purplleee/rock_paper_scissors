@@ -1,8 +1,6 @@
 import socket
 import threading
 import time
-import signal
-import sys
 import queue
 from auth import AuthenticationManager 
 
@@ -12,20 +10,10 @@ class GameSession:
         self.usernames = [player1_info[1], player2_info[1]]  # Username
         self.auth_manager = AuthenticationManager()
         self.moves = {}
-        self.scores = {"Player1": 0, "Player2": 0}
+        self.scores = {self.usernames[0]: 0, self.usernames[1]: 0}
         self.round = 0
         self.MAX_ROUNDS = 3
         self.game_over = False
-
-
-    def get_series_winner(self):
-        # Determine winner and update player stats
-        if self.scores["Player1"] > self.scores["Player2"]:
-            self.auth_manager.update_user_stats(self.usernames[0], True)
-            self.auth_manager.update_user_stats(self.usernames[1], False)
-        elif self.scores["Player2"] > self.scores["Player1"]:
-            self.auth_manager.update_user_stats(self.usernames[0], False)
-            self.auth_manager.update_user_stats(self.usernames[1], True)
 
     def collect_moves(self):
         """Collect moves for a single round"""
@@ -37,36 +25,40 @@ class GameSession:
         }
         
         for i, player in enumerate(self.players):
-            try:
-                # Send move prompt with choices
-                move_prompt = (
-                    f"Player {i+1}, choose your move:\n"
-                    "1. Rock\n"
-                    "2. Paper\n"
-                    "3. Scissors\n"
-                    "Enter your choice (1/2/3): "
-                )
-                player.send(move_prompt.encode())
+            while True:
+                try:
+                    # Send move prompt with choices using actual username
+                    move_prompt = (
+                        f"{self.usernames[i]}, choose your move:\n"
+                        "1. Rock\n"
+                        "2. Paper\n"
+                        "3. Scissors\n"
+                        "Enter your choice (1/2/3): "
+                    )
+                    player.send(move_prompt.encode())
+                    
+                    # Set timeout for move
+                    player.settimeout(30)
+                    move = player.recv(1024).decode().strip()
+                    
+                    # Validate move
+                    if move not in choices:
+                        player.send("Invalid move. Please choose 1, 2, or 3.".encode())
+                        continue
+                    
+                    self.moves[self.usernames[i]] = move
+                    break  # Valid move, exit the inner loop
                 
-                # Set timeout for move
-                player.settimeout(30)
-                move = player.recv(1024).decode().strip()
-                
-                # Validate move
-                if move not in choices:
-                    player.send("Invalid move. Please choose 1, 2, or 3.".encode())
-                    return False
-                
-                self.moves[f"Player{i+1}"] = move
-            except Exception as e:
-                print(f"Error collecting move from Player {i+1}: {e}")
-                return False
+                except Exception as e:
+                    print(f"Error collecting move from {self.usernames[i]}: {e}")
+                    player.send("An error occurred. Please try again.".encode())
+        
         return True
 
     def determine_round_winner(self):
         """Determine winner of a single round"""
         choices = {'1': 'Rock', '2': 'Paper', '3': 'Scissors'}
-        move1, move2 = self.moves["Player1"], self.moves["Player2"]
+        move1, move2 = self.moves[self.usernames[0]], self.moves[self.usernames[1]]
         move1_word, move2_word = choices[move1], choices[move2]
 
         if move1 == move2:
@@ -84,33 +76,34 @@ class GameSession:
         
         if winning_combos[move1] == move2:
             # Player 1 wins
-            self.scores["Player1"] += 1
+            self.scores[self.usernames[0]] += 1
             self.players[0].send(
                 (f"Round {self.round} - You won! {move1_word} beats {move2_word}\n"
-                 f"Current Score - You: {self.scores['Player1']}, Opponent: {self.scores['Player2']}").encode()
+                 f"Current Score - {self.usernames[0]}: {self.scores[self.usernames[0]]}, {self.usernames[1]}: {self.scores[self.usernames[1]]}").encode()
             )
             self.players[1].send(
                 (f"Round {self.round} - You lost! {move2_word} is beaten by {move1_word}\n"
-                 f"Current Score - You: {self.scores['Player2']}, Opponent: {self.scores['Player1']}").encode()
+                 f"Current Score - {self.usernames[1]}: {self.scores[self.usernames[1]]}, {self.usernames[0]}: {self.scores[self.usernames[0]]}").encode()
             )
         else:
             # Player 2 wins
-            self.scores["Player2"] += 1
+            self.scores[self.usernames[1]] += 1
             self.players[0].send(
                 (f"Round {self.round} - You lost! {move1_word} is beaten by {move2_word}\n"
-                 f"Current Score - You: {self.scores['Player1']}, Opponent: {self.scores['Player2']}").encode()
+                 f"Current Score - {self.usernames[0]}: {self.scores[self.usernames[0]]}, {self.usernames[1]}: {self.scores[self.usernames[1]]}").encode()
             )
             self.players[1].send(
                 (f"Round {self.round} - You won! {move2_word} beats {move1_word}\n"
-                 f"Current Score - You: {self.scores['Player2']}, Opponent: {self.scores['Player1']}").encode()
+                 f"Current Score - {self.usernames[1]}: {self.scores[self.usernames[1]]}, {self.usernames[0]}: {self.scores[self.usernames[0]]}").encode()
             )
 
     def play_game(self):
         """Run the entire game series"""
         try:
             # Send initial game start message
+            game_start_msg = f"Game started! {self.usernames[0]} vs {self.usernames[1]} - Best of 3 rounds."
             for player in self.players:
-                player.send("Game started! Best of 3 rounds.".encode())
+                player.send(game_start_msg.encode())
 
             while self.round < self.MAX_ROUNDS:
                 # Check if there's an overall winner
@@ -146,12 +139,12 @@ class GameSession:
 
     def get_series_winner(self):
         """Determine and communicate the overall game winner"""
-        if self.scores["Player1"] > self.scores["Player2"]:
-            self.players[0].send(f"Game Over! You won the series {self.scores['Player1']}-{self.scores['Player2']}".encode())
-            self.players[1].send(f"Game Over! You lost the series {self.scores['Player1']}-{self.scores['Player2']}".encode())
-        elif self.scores["Player2"] > self.scores["Player1"]:
-            self.players[0].send(f"Game Over! You lost the series {self.scores['Player2']}-{self.scores['Player1']}".encode())
-            self.players[1].send(f"Game Over! You won the series {self.scores['Player2']}-{self.scores['Player1']}".encode())
+        if self.scores[self.usernames[0]] > self.scores[self.usernames[1]]:
+            self.players[0].send(f"Game Over! You won the series {self.scores[self.usernames[0]]}-{self.scores[self.usernames[1]]}".encode())
+            self.players[1].send(f"Game Over! You lost the series {self.scores[self.usernames[0]]}-{self.scores[self.usernames[1]]}".encode())
+        elif self.scores[self.usernames[1]] > self.scores[self.usernames[0]]:
+            self.players[0].send(f"Game Over! You lost the series {self.scores[self.usernames[1]]}-{self.scores[self.usernames[0]]}".encode())
+            self.players[1].send(f"Game Over! You won the series {self.scores[self.usernames[1]]}-{self.scores[self.usernames[0]]}".encode())
         else:
             for player in self.players:
                 player.send("Game Over! The series is a tie!".encode())
@@ -210,7 +203,8 @@ class RockPaperScissorsServer:
                 else:
                     client_socket.send("Invalid action. Use LOGIN or REGISTER".encode())
             
-            # After authentication, proceed with player matching
+            # After authentication, send waiting message and proceed with player matching
+            client_socket.send("Waiting for another player to join...".encode())
             self.waiting_players.put((client_socket, username))
         except Exception as e:
             print(f"Authentication error: {e}")
@@ -224,6 +218,10 @@ class RockPaperScissorsServer:
                 if self.waiting_players.qsize() >= 2:
                     player1 = self.waiting_players.get()
                     player2 = self.waiting_players.get()
+                    
+                    # Notify players that a match is found
+                    player1[0].send(f"Match found! You'll be playing against {player2[1]}".encode())
+                    player2[0].send(f"Match found! You'll be playing against {player1[1]}".encode())
                     
                     # Create and start game session
                     game_session = GameSession(player1, player2)

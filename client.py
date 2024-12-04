@@ -99,20 +99,20 @@ class RockPaperScissorsClient:
                 if "successful" in response.lower():
                     break
                 
-                # Prompt for login/registration using numeric menu
-                print("\nAuthentication Menu:")
-                print("1. Login")
-                print("2. Register")
-                action_choice = input("Enter your choice (1/2): ").strip()
-                
-                # Map numeric choice to action
-                if action_choice == '1':
-                    action = "LOGIN"
-                elif action_choice == '2':
-                    action = "REGISTER"
-                else:
-                    print("Invalid choice. Please enter 1 or 2.")
-                    continue
+                # Validation loop for authentication menu
+                while True:
+                    print("\nAuthentication Menu:")
+                    print("1. Login")
+                    print("2. Register")
+                    action_choice = input("Enter your choice (1/2): ").strip()
+                    
+                    # Validate menu choice
+                    if action_choice in ['1', '2']:
+                        # Map numeric choice to action
+                        action = "LOGIN" if action_choice == '1' else "REGISTER"
+                        break
+                    else:
+                        print("Invalid choice. Please enter 1 or 2.")
                 
                 # Prompt for credentials
                 username = input("Username: ")
