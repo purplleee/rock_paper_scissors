@@ -17,10 +17,22 @@ class GameSession:
     def collect_moves(self):
         """Collect moves for a single round"""
         self.moves.clear()
+        choices = {
+            '1': 'Rock', 
+            '2': 'Paper', 
+            '3': 'Scissors'
+        }
+        
         for i, player in enumerate(self.players):
             try:
-                # Send move prompt
-                move_prompt = f"Player {i+1}, enter your choice (1/2/3): "
+                # Send move prompt with choices
+                move_prompt = (
+                    f"Player {i+1}, choose your move:\n"
+                    "1. Rock\n"
+                    "2. Paper\n"
+                    "3. Scissors\n"
+                    "Enter your choice (1/2/3): "
+                )
                 player.send(move_prompt.encode())
                 
                 # Set timeout for move
@@ -28,7 +40,7 @@ class GameSession:
                 move = player.recv(1024).decode().strip()
                 
                 # Validate move
-                if move not in ['1', '2', '3']:
+                if move not in choices:
                     player.send("Invalid move. Please choose 1, 2, or 3.".encode())
                     return False
                 
@@ -151,7 +163,7 @@ class RockPaperScissorsServer:
     def handle_player_connection(self, client_socket):
         """Handle individual player connection"""
         try:
-            # Send welcome message
+            # Send welcome message with waiting notification
             welcome_msg = (
                 "Welcome to Rock-Paper-Scissors Multiplayer!\n"
                 "Waiting for another player to join...\n"
@@ -162,6 +174,10 @@ class RockPaperScissorsServer:
             self.waiting_players.put(client_socket)
             
             print(f"Player added to waiting queue. Current waiting: {self.waiting_players.qsize()}")
+            
+            # Inform the player about waiting
+            waiting_msg = f"You are in the waiting queue. {self.waiting_players.qsize()} player(s) waiting."
+            client_socket.send(waiting_msg.encode())
         except Exception as e:
             print(f"Error handling player connection: {e}")
             try:
