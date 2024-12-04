@@ -3,223 +3,51 @@ import threading
 import time
 import signal
 import sys
+import queue
 
-class RockPaperScissorsServer:
-    def __init__(self, host='localhost', port=12345):
-        self.host = host
-        self.port = port
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind((self.host, self.port))
-        self.clients = []
+class GameSession:
+    def __init__(self, player1, player2):
+        self.players = [player1, player2]
         self.moves = {}
         self.scores = {"Player1": 0, "Player2": 0}
         self.round = 0
-        self.MAX_ROUNDS = 3  # Best of 3 rounds
-        self.is_running = True
-        
-        # Setup signal handler for graceful shutdown
-        signal.signal(signal.SIGINT, self.shutdown)
-        signal.signal(signal.SIGTERM, self.shutdown)
+        self.MAX_ROUNDS = 3
+        self.game_over = False
 
-    def shutdown(self, signum=None, frame=None):
-        """
-        Gracefully shutdown the server and all client connections
-        """
-        print("\nShutting down the server...")
-        self.is_running = False
-        
-        # Send shutdown message to all clients
-        shutdown_msg = "Server is shutting down. Game terminated.".encode()
-        for client in self.clients:
-            try:
-                # Attempt to send shutdown message
-                client.send(shutdown_msg)
-                # Properly shutdown and close the client socket
-                client.shutdown(socket.SHUT_RDWR)
-                client.close()
-            except:
-                pass
-        
-        # Close server socket
-        try:
-            self.server_socket.shutdown(socket.SHUT_RDWR)
-            self.server_socket.close()
-        except:
-            pass
-        
-        print("Server shut down complete.")
-        sys.exit(0)
-
-    def start(self):
-        try:
-            print(f"Server started on {self.host}:{self.port}")
-            print("Press Ctrl+C to shutdown the server.")
-            
-            while self.is_running:
-                print("Waiting for players to connect...")
-                self.reset_game_state()
-                self.wait_for_players()
-                
-                # If fewer than 2 players, continue waiting
-                if len(self.clients) < 2:
-                    print("Not enough players.")
-                    continue
-                
-                # Play game series
-                self.play_game_series()
-                
-                # Break the loop if server is no longer running
-                if not self.is_running:
-                    break
-        except Exception as e:
-            if self.is_running:
-                print(f"An error occurred: {e}")
-        finally:
-            # Ensure cleanup happens
-            self.shutdown()
-
-    def reset_game_state(self):
-        # Close existing client connections
-        for client in self.clients:
-            try:
-                client.close()
-            except:
-                pass
-        
-        self.clients.clear()
+    def collect_moves(self):
+        """Collect moves for a single round"""
         self.moves.clear()
-        self.scores = {"Player1": 0, "Player2": 0}
-        self.round = 0
-
-    def wait_for_players(self):
-        # Skip if server is no longer running
-        if not self.is_running:
-            return
-        
-        self.server_socket.listen(2)
-        print(f"Server listening on {self.host}:{self.port}")
-        
-        # Set a timeout for waiting for players
-        self.server_socket.settimeout(1)  # Short timeout to check is_running frequently
-        
-        try:
-            while len(self.clients) < 2 and self.is_running:
-                try:
-                    # Use a short timeout to allow checking is_running
-                    client_socket, address = self.server_socket.accept()
-                    print(f"Connection from {address}")
-                    self.clients.append(client_socket)
-                    
-                    # Send initial game instructions (only once)
-                    welcome_msg = (
-                        "Welcome to Rock-Paper-Scissors Multiplayer!\n"
-                        "Choose your move:\n"
-                        "1 - Rock\n"
-                        "2 - Paper\n"
-                        "3 - Scissors\n"
-                    )
-                    client_socket.send(welcome_msg.encode())
-                    
-                    # If two players have joined, send ready message
-                    if len(self.clients) == 2:
-                        ready_msg = "Both players connected! Let's start the game!\n"
-                        for client in self.clients:
-                            client.send(ready_msg.encode())
+        for i, player in enumerate(self.players):
+            try:
+                # Send move prompt
+                move_prompt = f"Player {i+1}, enter your choice (1/2/3): "
+                player.send(move_prompt.encode())
                 
-                except socket.timeout:
-                    # This allows checking is_running periodically
-                    continue
-        except Exception as e:
-            if self.is_running:
-                print(f"Error accepting connections: {e}")
-
-    def play_game_series(self):
-        try:
-            while self.round < self.MAX_ROUNDS and self.is_running:
-                # Check if there's an overall winner
-                if max(self.scores.values()) >= 2:
-                    break
+                # Set timeout for move
+                player.settimeout(30)
+                move = player.recv(1024).decode().strip()
                 
-                self.round += 1
-                print(f"Starting Round {self.round}")
-                
-                # Reset moves for this round
-                self.moves.clear()
-                
-                # Send round start message
-                round_start_msg = f"\n--- Round {self.round} ---\n"
-                for client in self.clients:
-                    client.send(round_start_msg.encode())
-                
-                # Receive and validate moves from both clients
-                if not self.collect_valid_moves():
-                    continue  # If moves are invalid, replay the round
-                
-                # Determine round winner
-                self.determine_round_winner(
-                    self.moves["Player1"], 
-                    self.moves["Player2"]
-                )
-            
-            # Send final game result if server is still running
-            if self.is_running:
-                self.get_series_winner()
-        
-        except Exception as e:
-            if self.is_running:
-                print(f"Error during game series: {e}")
-
-    def collect_valid_moves(self):
-        for i, client in enumerate(self.clients):
-            while True:
-                try:
-                    # Prompt for move
-                    move_prompt = f"Player {i+1}, enter your choice (1/2/3): "
-                    client.send(move_prompt.encode())
-                    
-                    # Set a timeout for receiving move
-                    client.settimeout(30)  # 30 seconds to make a move
-                    move = client.recv(1024).decode().strip()
-                    
-                    # Validate move
-                    if self.validate_move(move):
-                        self.moves[f"Player{i+1}"] = move
-                        break
-                    else:
-                        # Send invalid move message and continue loop
-                        client.send("Invalid move. Please choose 1, 2, or 3.".encode())
-                
-                except socket.timeout:
-                    print(f"Player{i+1} took too long to move")
+                # Validate move
+                if move not in ['1', '2', '3']:
+                    player.send("Invalid move. Please choose 1, 2, or 3.".encode())
                     return False
-                except Exception as e:
-                    print(f"Error receiving move from Player{i+1}: {e}")
-                    return False
-        
+                
+                self.moves[f"Player{i+1}"] = move
+            except Exception as e:
+                print(f"Error collecting move from Player {i+1}: {e}")
+                return False
         return True
 
-    def validate_move(self, move):
-        # Check if move is a valid number between 1 and 3
-        return move in ['1', '2', '3']
+    def determine_round_winner(self):
+        """Determine winner of a single round"""
+        choices = {'1': 'Rock', '2': 'Paper', '3': 'Scissors'}
+        move1, move2 = self.moves["Player1"], self.moves["Player2"]
+        move1_word, move2_word = choices[move1], choices[move2]
 
-    def determine_round_winner(self, move1, move2):
-        # Convert numeric moves to rock/paper/scissors
-        choices = {
-            '1': 'Rock',
-            '2': 'Paper', 
-            '3': 'Scissors'
-        }
-        
-        # Convert moves to words for readability
-        move1_word = choices[move1]
-        move2_word = choices[move2]
-        
-        # Winning combinations
         if move1 == move2:
-            # Personalized tie message for each player
-            for client in self.clients:
-                client.send(f"Round {self.round} Tie! Both players chose {move1_word}".encode())
+            # Tie
+            for player in self.players:
+                player.send(f"Round {self.round} Tie! Both players chose {move1_word}".encode())
             return
         
         # All winning scenarios
@@ -232,41 +60,185 @@ class RockPaperScissorsServer:
         if winning_combos[move1] == move2:
             # Player 1 wins
             self.scores["Player1"] += 1
-            # Send personalized messages to each player
-            self.clients[0].send(
+            self.players[0].send(
                 (f"Round {self.round} - You won! {move1_word} beats {move2_word}\n"
                  f"Current Score - You: {self.scores['Player1']}, Opponent: {self.scores['Player2']}").encode()
             )
-            self.clients[1].send(
+            self.players[1].send(
                 (f"Round {self.round} - You lost! {move2_word} is beaten by {move1_word}\n"
                  f"Current Score - You: {self.scores['Player2']}, Opponent: {self.scores['Player1']}").encode()
             )
         else:
             # Player 2 wins
             self.scores["Player2"] += 1
-            # Send personalized messages to each player
-            self.clients[0].send(
+            self.players[0].send(
                 (f"Round {self.round} - You lost! {move1_word} is beaten by {move2_word}\n"
                  f"Current Score - You: {self.scores['Player1']}, Opponent: {self.scores['Player2']}").encode()
             )
-            self.clients[1].send(
+            self.players[1].send(
                 (f"Round {self.round} - You won! {move2_word} beats {move1_word}\n"
                  f"Current Score - You: {self.scores['Player2']}, Opponent: {self.scores['Player1']}").encode()
             )
 
+    def play_game(self):
+        """Run the entire game series"""
+        try:
+            # Send initial game start message
+            for player in self.players:
+                player.send("Game started! Best of 3 rounds.".encode())
+
+            while self.round < self.MAX_ROUNDS:
+                # Check if there's an overall winner
+                if max(self.scores.values()) >= 2:
+                    break
+                
+                self.round += 1
+                print(f"Starting Round {self.round}")
+                
+                # Send round start message
+                round_start_msg = f"\n--- Round {self.round} ---\n"
+                for player in self.players:
+                    player.send(round_start_msg.encode())
+                
+                # Collect moves
+                if not self.collect_moves():
+                    continue
+                
+                # Determine round winner
+                self.determine_round_winner()
+            
+            # Determine series winner
+            self.get_series_winner()
+        except Exception as e:
+            print(f"Error in game session: {e}")
+        finally:
+            # Close player connections
+            for player in self.players:
+                try:
+                    player.close()
+                except:
+                    pass
+
     def get_series_winner(self):
+        """Determine and communicate the overall game winner"""
         if self.scores["Player1"] > self.scores["Player2"]:
-            # Send personalized final result
-            self.clients[0].send(f"Game Over! You won the series {self.scores['Player1']}-{self.scores['Player2']}".encode())
-            self.clients[1].send(f"Game Over! You lost the series {self.scores['Player1']}-{self.scores['Player2']}".encode())
+            self.players[0].send(f"Game Over! You won the series {self.scores['Player1']}-{self.scores['Player2']}".encode())
+            self.players[1].send(f"Game Over! You lost the series {self.scores['Player1']}-{self.scores['Player2']}".encode())
         elif self.scores["Player2"] > self.scores["Player1"]:
-            # Send personalized final result
-            self.clients[0].send(f"Game Over! You lost the series {self.scores['Player2']}-{self.scores['Player1']}".encode())
-            self.clients[1].send(f"Game Over! You won the series {self.scores['Player2']}-{self.scores['Player1']}".encode())
+            self.players[0].send(f"Game Over! You lost the series {self.scores['Player2']}-{self.scores['Player1']}".encode())
+            self.players[1].send(f"Game Over! You won the series {self.scores['Player2']}-{self.scores['Player1']}".encode())
         else:
-            # Send tie message to both
-            for client in self.clients:
-                client.send("Game Over! The series is a tie!".encode())
+            for player in self.players:
+                player.send("Game Over! The series is a tie!".encode())
+
+class RockPaperScissorsServer:
+    def __init__(self, host='localhost', port=12345):
+        self.host = host
+        self.port = port
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.bind((self.host, self.port))
+        
+        # Queue for waiting players
+        self.waiting_players = queue.Queue()
+        
+        # Active game sessions
+        self.active_sessions = []
+        
+        # Flag to control server
+        self.is_running = True
+
+    def handle_player_connection(self, client_socket):
+        """Handle individual player connection"""
+        try:
+            # Send welcome message
+            welcome_msg = (
+                "Welcome to Rock-Paper-Scissors Multiplayer!\n"
+                "Waiting for another player to join...\n"
+            )
+            client_socket.send(welcome_msg.encode())
+            
+            # Add to waiting players
+            self.waiting_players.put(client_socket)
+            
+            print(f"Player added to waiting queue. Current waiting: {self.waiting_players.qsize()}")
+        except Exception as e:
+            print(f"Error handling player connection: {e}")
+            try:
+                client_socket.close()
+            except:
+                pass
+
+    def match_players(self):
+        """Match waiting players into game sessions"""
+        while self.is_running:
+            try:
+                # Try to get two players
+                if self.waiting_players.qsize() >= 2:
+                    player1 = self.waiting_players.get()
+                    player2 = self.waiting_players.get()
+                    
+                    # Create and start game session
+                    game_session = GameSession(player1, player2)
+                    session_thread = threading.Thread(target=game_session.play_game)
+                    session_thread.start()
+                    
+                    # Keep track of active sessions
+                    self.active_sessions.append(session_thread)
+            except Exception as e:
+                print(f"Error in player matching: {e}")
+            
+            # Small sleep to prevent tight loop
+            time.sleep(1)
+
+    def start(self):
+        try:
+            # Start player matching thread
+            matching_thread = threading.Thread(target=self.match_players)
+            matching_thread.start()
+            
+            print(f"Server started on {self.host}:{self.port}")
+            self.server_socket.listen()
+            
+            while self.is_running:
+                try:
+                    # Accept incoming connections
+                    client_socket, address = self.server_socket.accept()
+                    print(f"Connection from {address}")
+                    
+                    # Handle each connection in a separate thread
+                    connection_thread = threading.Thread(
+                        target=self.handle_player_connection, 
+                        args=(client_socket,)
+                    )
+                    connection_thread.start()
+                
+                except Exception as e:
+                    if self.is_running:
+                        print(f"Error accepting connection: {e}")
+        except KeyboardInterrupt:
+            print("\nServer shutting down...")
+        finally:
+            self.shutdown()
+
+    def shutdown(self):
+        """Gracefully shutdown the server"""
+        self.is_running = False
+        
+        # Close server socket
+        try:
+            self.server_socket.shutdown(socket.SHUT_RDWR)
+            self.server_socket.close()
+        except:
+            pass
+        
+        # Close all waiting player connections
+        while not self.waiting_players.empty():
+            try:
+                player = self.waiting_players.get_nowait()
+                player.close()
+            except:
+                pass
 
 def main():
     server = RockPaperScissorsServer()
