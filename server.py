@@ -4,15 +4,28 @@ import time
 import signal
 import sys
 import queue
+from auth import AuthenticationManager 
 
 class GameSession:
-    def __init__(self, player1, player2):
-        self.players = [player1, player2]
+    def __init__(self, player1_info, player2_info):
+        self.players = [player1_info[0], player2_info[0]]  # Socket
+        self.usernames = [player1_info[1], player2_info[1]]  # Username
+        self.auth_manager = AuthenticationManager()
         self.moves = {}
         self.scores = {"Player1": 0, "Player2": 0}
         self.round = 0
         self.MAX_ROUNDS = 3
         self.game_over = False
+
+
+    def get_series_winner(self):
+        # Determine winner and update player stats
+        if self.scores["Player1"] > self.scores["Player2"]:
+            self.auth_manager.update_user_stats(self.usernames[0], True)
+            self.auth_manager.update_user_stats(self.usernames[1], False)
+        elif self.scores["Player2"] > self.scores["Player1"]:
+            self.auth_manager.update_user_stats(self.usernames[0], False)
+            self.auth_manager.update_user_stats(self.usernames[1], True)
 
     def collect_moves(self):
         """Collect moves for a single round"""
@@ -161,29 +174,47 @@ class RockPaperScissorsServer:
         self.is_running = True
 
     def handle_player_connection(self, client_socket):
-        """Handle individual player connection"""
+        # Create authentication manager
+        auth_manager = AuthenticationManager()
+        
         try:
-            # Send welcome message with waiting notification
-            welcome_msg = (
-                "Welcome to Rock-Paper-Scissors Multiplayer!\n"
-                "Waiting for another player to join...\n"
-            )
-            client_socket.send(welcome_msg.encode())
+            # Authentication phase
+            client_socket.send("Please login or register (LOGIN/REGISTER username password)".encode())
             
-            # Add to waiting players
-            self.waiting_players.put(client_socket)
+            authenticated = False
+            while not authenticated:
+                response = client_socket.recv(1024).decode().strip()
+                parts = response.split()
+                
+                if len(parts) != 3:
+                    client_socket.send("Invalid format. Use LOGIN/REGISTER username password".encode())
+                    continue
+                
+                action, username, password = parts
+                
+                if action.upper() == 'REGISTER':
+                    if auth_manager.register_user(username, password):
+                        client_socket.send("Registration successful!".encode())
+                    else:
+                        client_socket.send("Username already exists".encode())
+                        continue
+                
+                elif action.upper() == 'LOGIN':
+                    if auth_manager.authenticate_user(username, password):
+                        authenticated = True
+                        client_socket.send("Login successful!".encode())
+                    else:
+                        client_socket.send("Invalid credentials".encode())
+                        continue
+                
+                else:
+                    client_socket.send("Invalid action. Use LOGIN or REGISTER".encode())
             
-            print(f"Player added to waiting queue. Current waiting: {self.waiting_players.qsize()}")
-            
-            # Inform the player about waiting
-            waiting_msg = f"You are in the waiting queue. {self.waiting_players.qsize()} player(s) waiting."
-            client_socket.send(waiting_msg.encode())
+            # After authentication, proceed with player matching
+            self.waiting_players.put((client_socket, username))
         except Exception as e:
-            print(f"Error handling player connection: {e}")
-            try:
-                client_socket.close()
-            except:
-                pass
+            print(f"Authentication error: {e}")
+            client_socket.close()
 
     def match_players(self):
         """Match waiting players into game sessions"""

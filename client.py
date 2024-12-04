@@ -2,6 +2,7 @@ import socket
 import sys
 import threading
 import time
+from auth import AuthenticationManager 
 
 class RockPaperScissorsClient:
     def __init__(self, host='localhost', port=12345):
@@ -89,6 +90,37 @@ class RockPaperScissorsClient:
     def connect(self):
         try:
             self.client_socket.connect((self.host, self.port))
+            
+            # Handle authentication
+            while True:
+                response = self.client_socket.recv(1024).decode()
+                print(response)
+                
+                if "successful" in response.lower():
+                    break
+                
+                # Prompt for login/registration using numeric menu
+                print("\nAuthentication Menu:")
+                print("1. Login")
+                print("2. Register")
+                action_choice = input("Enter your choice (1/2): ").strip()
+                
+                # Map numeric choice to action
+                if action_choice == '1':
+                    action = "LOGIN"
+                elif action_choice == '2':
+                    action = "REGISTER"
+                else:
+                    print("Invalid choice. Please enter 1 or 2.")
+                    continue
+                
+                # Prompt for credentials
+                username = input("Username: ")
+                password = input("Password: ")
+                
+                # Send authentication request
+                message = f"{action} {username} {password}"
+                self.client_socket.send(message.encode())
             
             # Create threads for receiving and sending messages
             receive_thread = threading.Thread(target=self.receive_messages)
