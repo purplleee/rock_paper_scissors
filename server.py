@@ -164,37 +164,29 @@ class Tournament:
     def __init__(self):
         self.players_queue = queue.Queue()
         self.active_sessions = []
-
-    def add_player(self, player_info):
-        """Add a player to the tournament."""
-        self.players_queue.put(player_info)
+        self.max_rounds = 5  # Optional: limit total tournament rounds
+        self.total_tournament_rounds = 0
 
     def organize_tournament(self):
         """Organize and run the tournament."""
-        while True:
+        while self.total_tournament_rounds < self.max_rounds:
             # Wait for enough players
             if self.players_queue.qsize() < 2:
                 time.sleep(1)  # Small delay to avoid busy waiting
                 continue
-        
+           
             # Get two players from the queue
             try:
-                player1 = self.players_queue.get()
-                player2 = self.players_queue.get()
-            except Exception as e:
-                print(f"Error getting players from queue: {e}")
-                continue
+                player1 = self.players_queue.get(timeout=10)
+                player2 = self.players_queue.get(timeout=10)
+            except queue.Empty:
+                continue  # If not enough players, retry
 
+            # Notify players of their match
             try:
-                # Notify players of their match
-                player1[0].send(f"Match found! You will play against {player2[1]}.\n".encode())
-                player2[0].send(f"Match found! You will play against {player1[1]}.\n".encode())
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                # If sending match notification fails, return players to queue or handle disconnection
-                print("Connection error during match notification. Skipping match.")
-                continue
+                player1[0].send(f"Tournament Match: You will play against {player2[1]}.\n".encode())
+                player2[0].send(f"Tournament Match: You will play against {player1[1]}.\n".encode())
 
-            try:
                 # Start the game session
                 game_session = GameSession(player1, player2)
                 session_thread = threading.Thread(target=game_session.play_game)
@@ -204,39 +196,33 @@ class Tournament:
                 # Monitor the session to determine the winner
                 session_thread.join()  # Wait for the game to finish
                 winner = self.determine_winner(game_session)
-            
+               
+                if winner:
+                    winner_socket, winner_username = winner
+                    winner_socket.send(f"You won this round! Proceeding in the tournament.\n".encode())
+                    self.add_player((winner_socket, winner_username))
+
+                self.total_tournament_rounds += 1
+
+            except Exception as e:
+                print(f"Tournament match error: {e}")
+
+            # If only one player remains or max rounds reached, end tournament
+            if (self.players_queue.qsize() < 2 and len(self.active_sessions) == 1) or self.total_tournament_rounds >= self.max_rounds:
+                winner = self.get_tournament_winner()
                 if winner:
                     winner_socket, winner_username = winner
                     try:
-                        winner_socket.send("You won this round! Proceeding to the next match...\n".encode())
-                        self.add_player((winner_socket, winner_username))
-                    except (BrokenPipeError, ConnectionResetError, OSError):
-                        print(f"Could not send message to winner {winner_username}")
-                        # Optionally, you might want to log this or handle it differently
+                        winner_socket.send("Congratulations! You are the tournament champion!\n".encode())
+                    except:
+                        pass
+                break
 
-                # If only one player remains, declare them the tournament winner
-                if self.players_queue.qsize() < 2 and len(self.active_sessions) == 1:
-                    winner = self.determine_winner(game_session)
-                    if winner:
-                        winner_socket, winner_username = winner
-                        try:
-                            winner_socket.send("Congratulations! You are the tournament champion!\n".encode())
-                        except (BrokenPipeError, ConnectionResetError, OSError):
-                            print(f"Could not send champion message to {winner_username}")
-                    break
-
-            except Exception as e:
-                print(f"Unexpected error in tournament organization: {e}")
-                # Ensure we don't get stuck if an unexpected error occurs
-                continue
-
-    def determine_winner(self, game_session):
-        """Determine the winner of a game session."""
-        scores = game_session.scores
-        if scores[game_session.usernames[0]] > scores[game_session.usernames[1]]:
-            return game_session.players[0], game_session.usernames[0]
-        elif scores[game_session.usernames[1]] > scores[game_session.usernames[0]]:
-            return game_session.players[1], game_session.usernames[1]
+    def get_tournament_winner(self):
+        """Get the tournament winner when tournament ends."""
+        if self.players_queue.qsize() == 1:
+            # If only one player in queue, they are the winner
+            return list(self.players_queue.queue)[0]
         return None                
 
 class RockPaperScissorsServer:
@@ -260,14 +246,23 @@ class RockPaperScissorsServer:
         self.is_running = True
 
     def handle_player_connection(self, client_socket):
+        """ Handle player authentication and tournament participation """
+        # Ensure client_socket is valid before using it
+        if not client_socket:
+            print("Invalid client socket received")
+            return
+
         # Create authentication manager
         auth_manager = AuthenticationManager()
         
         try:
-            # Authentication phase
+            # Send login/register prompt
             client_socket.send("Please login or register (LOGIN/REGISTER username password)".encode())
             
             authenticated = False
+            username = None
+            
+            # Authentication process
             while not authenticated:
                 response = client_socket.recv(1024).decode().strip()
                 parts = response.split()
@@ -296,20 +291,24 @@ class RockPaperScissorsServer:
                 else:
                     client_socket.send("Invalid action. Use LOGIN or REGISTER".encode())
             
-            # After authentication, send tournament participation prompt
-            client_socket.send("Do you want to join the tournament? (yes/no)".encode())
+            # Tournament participation
+            client_socket.send("Tournament is running. Do you want to join? (yes/no)".encode())
             
             response = client_socket.recv(1024).decode().strip().lower()
             if response == "yes":
+                # Add player to tournament queue
                 self.tournament.add_player((client_socket, username))
-                client_socket.send("You have been added to the tournament. Waiting for other players...\n".encode())
+                client_socket.send("You have been added to the tournament queue. Waiting for a match...\n".encode())
             else:
-                client_socket.send("Waiting for another player to join a normal game...\n".encode())
-                self.waiting_players.put((client_socket, username))
+                client_socket.send("You chose not to join the tournament. Goodbye!\n".encode())
+                client_socket.close()
         
         except Exception as e:
-            print(f"Authentication error: {e}")
-            client_socket.close()
+            print(f"Connection handling error: {e}")
+            try:
+                client_socket.close()
+            except:
+                pass
 
     def match_players(self):
         """Match waiting players into normal game sessions"""
