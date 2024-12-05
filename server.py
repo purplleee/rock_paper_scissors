@@ -223,7 +223,12 @@ class Tournament:
         if self.players_queue.qsize() == 1:
             # If only one player in queue, they are the winner
             return list(self.players_queue.queue)[0]
-        return None                
+        return None   
+
+    def add_player(self, player_info):
+        """Add a player to the tournament queue"""
+        self.players_queue.put(player_info)             
+        
 
 class RockPaperScissorsServer:
     def __init__(self, host='localhost', port=12345):
@@ -246,7 +251,7 @@ class RockPaperScissorsServer:
         self.is_running = True
 
     def handle_player_connection(self, client_socket):
-        """ Handle player authentication and tournament participation """
+        """ Handle player authentication and game mode selection """
         # Ensure client_socket is valid before using it
         if not client_socket:
             print("Invalid client socket received")
@@ -291,17 +296,22 @@ class RockPaperScissorsServer:
                 else:
                     client_socket.send("Invalid action. Use LOGIN or REGISTER".encode())
             
-            # Tournament participation
-            client_socket.send("Tournament is running. Do you want to join? (yes/no)".encode())
+            # Game Mode Selection
+            client_socket.send("Choose your game mode: NORMAL or TOURNAMENT".encode())
+            mode_response = client_socket.recv(1024).decode().strip().upper()
             
-            response = client_socket.recv(1024).decode().strip().lower()
-            if response == "yes":
-                # Add player to tournament queue
+            # Validate game mode
+            if mode_response not in ['NORMAL', 'TOURNAMENT']:
+                client_socket.send("Invalid game mode. Defaulting to NORMAL.".encode())
+                mode_response = 'NORMAL'
+            
+            # Add player to appropriate queue based on game mode
+            if mode_response == 'NORMAL':
+                self.waiting_players.put((client_socket, username))
+                client_socket.send("You have been added to the normal game queue. Waiting for a match...\n".encode())
+            else:  # Tournament mode
                 self.tournament.add_player((client_socket, username))
                 client_socket.send("You have been added to the tournament queue. Waiting for a match...\n".encode())
-            else:
-                client_socket.send("You chose not to join the tournament. Goodbye!\n".encode())
-                client_socket.close()
         
         except Exception as e:
             print(f"Connection handling error: {e}")

@@ -122,6 +122,23 @@ class RockPaperScissorsClient:
                 message = f"{action} {username} {password}"
                 self.client_socket.send(message.encode())
             
+            # Game Mode Selection
+            while True:
+                # Prompt for game mode
+                print("\nChoose Game Mode:")
+                print("1. Normal Game")
+                print("2. Tournament")
+                mode_choice = input("Enter your choice (1/2): ").strip()
+                
+                # Validate game mode choice
+                if mode_choice in ['1', '2']:
+                    # Send game mode selection to server
+                    mode = "NORMAL" if mode_choice == '1' else "TOURNAMENT"
+                    self.client_socket.send(mode.encode())
+                    break
+                else:
+                    print("Invalid choice. Please enter 1 or 2.")
+            
             # Create threads for receiving and sending messages
             receive_thread = threading.Thread(target=self.receive_messages)
             send_thread = threading.Thread(target=self.send_messages)
