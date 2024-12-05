@@ -176,37 +176,59 @@ class Tournament:
             if self.players_queue.qsize() < 2:
                 time.sleep(1)  # Small delay to avoid busy waiting
                 continue
-           
+        
             # Get two players from the queue
-            player1 = self.players_queue.get()
-            player2 = self.players_queue.get()
+            try:
+                player1 = self.players_queue.get()
+                player2 = self.players_queue.get()
+            except Exception as e:
+                print(f"Error getting players from queue: {e}")
+                continue
 
-            # Notify players of their match
-            player1[0].send(f"Match found! You will play against {player2[1]}.\n".encode())
-            player2[0].send(f"Match found! You will play against {player1[1]}.\n".encode())
+            try:
+                # Notify players of their match
+                player1[0].send(f"Match found! You will play against {player2[1]}.\n".encode())
+                player2[0].send(f"Match found! You will play against {player1[1]}.\n".encode())
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                # If sending match notification fails, return players to queue or handle disconnection
+                print("Connection error during match notification. Skipping match.")
+                continue
 
-            # Start the game session
-            game_session = GameSession(player1, player2)
-            session_thread = threading.Thread(target=game_session.play_game)
-            session_thread.start()
-            self.active_sessions.append((session_thread, player1, player2))
+            try:
+                # Start the game session
+                game_session = GameSession(player1, player2)
+                session_thread = threading.Thread(target=game_session.play_game)
+                session_thread.start()
+                self.active_sessions.append((session_thread, player1, player2))
 
-            # Monitor the session to determine the winner
-            session_thread.join()  # Wait for the game to finish
-            winner = self.determine_winner(game_session)
-           
-            if winner:
-                winner_socket, winner_username = winner
-                winner_socket.send("You won this round! Proceeding to the next match...\n".encode())
-                self.add_player((winner_socket, winner_username))
-
-            # If only one player remains, declare them the tournament winner
-            if self.players_queue.qsize() < 2 and len(self.active_sessions) == 1:
+                # Monitor the session to determine the winner
+                session_thread.join()  # Wait for the game to finish
                 winner = self.determine_winner(game_session)
+            
                 if winner:
                     winner_socket, winner_username = winner
-                    winner_socket.send("Congratulations! You are the tournament champion!\n".encode())
-                break
+                    try:
+                        winner_socket.send("You won this round! Proceeding to the next match...\n".encode())
+                        self.add_player((winner_socket, winner_username))
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        print(f"Could not send message to winner {winner_username}")
+                        # Optionally, you might want to log this or handle it differently
+
+                # If only one player remains, declare them the tournament winner
+                if self.players_queue.qsize() < 2 and len(self.active_sessions) == 1:
+                    winner = self.determine_winner(game_session)
+                    if winner:
+                        winner_socket, winner_username = winner
+                        try:
+                            winner_socket.send("Congratulations! You are the tournament champion!\n".encode())
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            print(f"Could not send champion message to {winner_username}")
+                    break
+
+            except Exception as e:
+                print(f"Unexpected error in tournament organization: {e}")
+                # Ensure we don't get stuck if an unexpected error occurs
+                continue
 
     def determine_winner(self, game_session):
         """Determine the winner of a game session."""
@@ -282,7 +304,7 @@ class RockPaperScissorsServer:
                 self.tournament.add_player((client_socket, username))
                 client_socket.send("You have been added to the tournament. Waiting for other players...\n".encode())
             else:
-                client_socket.send("Waiting for another player to join...\n".encode())
+                client_socket.send("Waiting for another player to join a normal game...\n".encode())
                 self.waiting_players.put((client_socket, username))
         
         except Exception as e:
@@ -290,10 +312,10 @@ class RockPaperScissorsServer:
             client_socket.close()
 
     def match_players(self):
-        """Match waiting players into game sessions"""
+        """Match waiting players into normal game sessions"""
         while self.is_running:
             try:
-                # Try to get two players
+                # Ensure enough players for a normal game
                 if self.waiting_players.qsize() >= 2:
                     player1 = self.waiting_players.get()
                     player2 = self.waiting_players.get()
@@ -302,7 +324,7 @@ class RockPaperScissorsServer:
                     player1[0].send(f"Match found! You'll be playing against {player2[1]}".encode())
                     player2[0].send(f"Match found! You'll be playing against {player1[1]}".encode())
                     
-                    # Create and start game session
+                    # Create and start a normal game session
                     game_session = GameSession(player1, player2)
                     session_thread = threading.Thread(target=game_session.play_game)
                     session_thread.start()
