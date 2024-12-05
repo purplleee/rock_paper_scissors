@@ -163,18 +163,39 @@ class GameSession:
 class Tournament:
     def __init__(self):
         self.players_queue = queue.Queue()
+        self.tournament_players = []  # Track all original players
         self.active_sessions = []
         self.max_rounds = 5  # Optional: limit total tournament rounds
         self.total_tournament_rounds = 0
+        self.tournament_active = False
+        self.tournament_winner = None
+
+    def add_player(self, player_info):
+        """Add a player to the tournament queue"""
+        if not self.tournament_active:
+            self.tournament_active = True
+            self.tournament_players.clear()  # Reset players list
+            # Start tournament organization in a new thread
+            tournament_thread = threading.Thread(target=self.organize_tournament)
+            tournament_thread.start()
+        
+        self.players_queue.put(player_info)
+        self.tournament_players.append(player_info)
+        print(f"Player {player_info[1]} added to tournament queue")
 
     def organize_tournament(self):
         """Organize and run the tournament."""
-        while self.total_tournament_rounds < self.max_rounds:
+        print("Tournament organization started")
+        self.total_tournament_rounds = 0
+        tournament_winners = []
+
+        while self.tournament_active and self.total_tournament_rounds < self.max_rounds:
             # Wait for enough players
-            if self.players_queue.qsize() < 2:
+            while self.players_queue.qsize() < 2:
                 time.sleep(1)  # Small delay to avoid busy waiting
-                continue
-        
+                if not self.tournament_active:
+                    return
+
             # Get two players from the queue
             try:
                 player1 = self.players_queue.get(timeout=10)
@@ -189,53 +210,53 @@ class Tournament:
 
                 # Start the tournament game session
                 game_session = GameSession(player1, player2)
-                session_thread = threading.Thread(target=game_session.play_game)
-                session_thread.start()
-                self.active_sessions.append((session_thread, player1, player2))
+                game_session.play_game()  # This will block until the game is complete
 
-                # Monitor the session to determine the winner
-                session_thread.join()  # Wait for the game to finish
-                
-                # Implement tournament-specific winner handling
+                # Determine winner
                 if game_session.scores[player1[1]] > game_session.scores[player2[1]]:
                     winner = player1
+                    loser = player2
                 elif game_session.scores[player2[1]] > game_session.scores[player1[1]]:
                     winner = player2
+                    loser = player1
                 else:
-                    # In case of a tie, randomly choose or replay
+                    # In case of a tie, randomly choose
                     import random
-                    winner = random.choice([player1, player2])
-                
+                    winner, loser = random.sample([player1, player2], 2)
+
                 # Add winner back to tournament queue
                 winner[0].send("You won this tournament round! Proceeding in the tournament.\n".encode())
-                self.add_player(winner)
+                tournament_winners.append(winner)
+                self.players_queue.put(winner)
 
+                # Increment tournament rounds
                 self.total_tournament_rounds += 1
+                print(f"Tournament round {self.total_tournament_rounds} completed")
 
             except Exception as e:
                 print(f"Tournament match error: {e}")
 
-            # Tournament end conditions
-            if (self.players_queue.qsize() < 2 and len(self.active_sessions) == 1) or self.total_tournament_rounds >= self.max_rounds:
-                winner = self.get_tournament_winner()
-                if winner:
-                    winner_socket, winner_username = winner
-                    try:
-                        winner_socket.send("Congratulations! You are the tournament champion!\n".encode())
-                    except:
-                        pass
+            # Check tournament end conditions
+            if self.players_queue.qsize() < 2:
                 break
+
+        # Determine final winner based on actual tournament progression
+        if tournament_winners:
+            final_winner = tournament_winners[-1]
+            try:
+                final_winner[0].send("Congratulations! You are the tournament champion!\n".encode())
+                print(f"Tournament champion: {final_winner[1]}")
+                self.tournament_winner = final_winner
+            except Exception as e:
+                print(f"Error sending champion message: {e}")
+        
+        # Reset tournament state
+        self.tournament_active = False
+        self.total_tournament_rounds = 0
 
     def get_tournament_winner(self):
         """Get the tournament winner when tournament ends."""
-        if self.players_queue.qsize() == 1:
-            # If only one player in queue, they are the winner
-            return list(self.players_queue.queue)[0]
-        return None   
-
-    def add_player(self, player_info):
-        """Add a player to the tournament queue"""
-        self.players_queue.put(player_info)             
+        return self.tournament_winner
 
 
 class RockPaperScissorsServer:
@@ -359,9 +380,8 @@ class RockPaperScissorsServer:
     def start(self):
     
         try:
-            # Start tournament thread
-            tournament_thread = threading.Thread(target=self.tournament.organize_tournament)
-            tournament_thread.start()
+            # No need to explicitly start tournament thread here
+            # Tournament will start when first player joins
             
             # Start normal game matching thread
             match_players_thread = threading.Thread(target=self.match_players)
