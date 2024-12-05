@@ -13,17 +13,13 @@ class RockPaperScissorsClient:
         self.game_over = False
 
     def receive_messages(self):
-        """
-        Continuously receive messages from the server
-        """
         try:
             while not self.game_over and self.is_running:
                 try:
-                    # Set a short timeout to check is_running
+                    # Set a timeout to periodically check game state
                     self.client_socket.settimeout(1)
                     response = self.client_socket.recv(1024).decode()
                     
-                    # Check for server shutdown or empty message
                     if not response:
                         print("\nConnection to server lost.")
                         self.shutdown()
@@ -31,14 +27,14 @@ class RockPaperScissorsClient:
                     
                     print(response)
                     
-                    # Check for game over message
+                    # More explicit game over detection
                     if "Game Over" in response or "Server is shutting down" in response:
                         self.game_over = True
                         self.shutdown()
                         break
                 
                 except socket.timeout:
-                    # This allows checking is_running periodically
+                    # Periodically check if game is still active
                     continue
                 except Exception as e:
                     print(f"Error receiving message: {e}")
@@ -91,36 +87,50 @@ class RockPaperScissorsClient:
         try:
             self.client_socket.connect((self.host, self.port))
             
-            # Handle authentication
-            while True:
-                response = self.client_socket.recv(1024).decode()
-                print(response)
-                
-                if "successful" in response.lower():
-                    break
-                
-                # Validation loop for authentication menu
-                while True:
-                    print("\nAuthentication Menu:")
-                    print("1. Login")
-                    print("2. Register")
-                    action_choice = input("Enter your choice (1/2): ").strip()
+            # Authentication process
+            authenticated = False
+            while not authenticated:
+                try:
+                    # Receive authentication prompt
+                    response = self.client_socket.recv(1024).decode()
+                    print(response)
                     
                     # Validate menu choice
-                    if action_choice in ['1', '2']:
-                        # Map numeric choice to action
-                        action = "LOGIN" if action_choice == '1' else "REGISTER"
+                    while True:
+                        print("\nAuthentication Menu:")
+                        print("1. Login")
+                        print("2. Register")
+                        action_choice = input("Enter your choice (1/2): ").strip()
+                        
+                        if action_choice in ['1', '2']:
+                            # Map numeric choice to action
+                            action = "LOGIN" if action_choice == '1' else "REGISTER"
+                            break
+                        else:
+                            print("Invalid choice. Please enter 1 or 2.")
+                    
+                    # Prompt for credentials
+                    username = input("Username: ")
+                    password = input("Password: ")
+                    
+                    # Send authentication request
+                    message = f"{action} {username} {password}"
+                    self.client_socket.send(message.encode())
+                    
+                    # Wait for authentication response
+                    auth_response = self.client_socket.recv(1024).decode()
+                    print(auth_response)
+                    
+                    # Check authentication status
+                    if "successful" in auth_response.lower():
+                        authenticated = True
                         break
-                    else:
-                        print("Invalid choice. Please enter 1 or 2.")
-                
-                # Prompt for credentials
-                username = input("Username: ")
-                password = input("Password: ")
-                
-                # Send authentication request
-                message = f"{action} {username} {password}"
-                self.client_socket.send(message.encode())
+                except Exception as e:
+                    print(f"Authentication error: {e}")
+                    # Add option to retry or exit
+                    retry = input("Authentication failed. Retry? (y/n): ").lower()
+                    if retry != 'y':
+                        return
             
             # Game Mode Selection
             while True:
@@ -143,20 +153,17 @@ class RockPaperScissorsClient:
             receive_thread = threading.Thread(target=self.receive_messages)
             send_thread = threading.Thread(target=self.send_messages)
             
-            # Set threads as daemon so they'll terminate when main thread ends
-            receive_thread.daemon = True
-            send_thread.daemon = True
+            # Set threads as non-daemon to prevent premature termination
+            receive_thread.daemon = False
+            send_thread.daemon = False
             
             # Start threads
             receive_thread.start()
             send_thread.start()
             
-            # Wait for threads to complete or game to end
-            while not self.game_over and self.is_running:
-                time.sleep(0.1)
-            
-            # Ensure shutdown
-            self.shutdown()
+            # Wait for threads to complete
+            receive_thread.join()
+            send_thread.join()
         
         except ConnectionRefusedError:
             print("Unable to connect to the server.")

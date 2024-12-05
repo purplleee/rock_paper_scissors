@@ -1,6 +1,8 @@
 import socket
 import threading
 import time
+import math
+import random
 import queue
 from auth import AuthenticationManager 
 
@@ -161,103 +163,171 @@ class GameSession:
                 player.send("Game Over! The series is a tie!".encode())
                 
 class Tournament:
-    def __init__(self):
-        self.players_queue = queue.Queue()
-        self.tournament_players = []  # Track all original players
-        self.active_sessions = []
-        self.max_rounds = 5  # Optional: limit total tournament rounds
-        self.total_tournament_rounds = 0
+    def __init__(self, max_players=16):
+        self.players_queue = queue.Queue(maxsize=max_players)
+        self.active_players = []
+        self.eliminated_players = []
+        self.max_rounds = int(math.log2(max_players))  # Dynamically calculate max rounds
+        self.current_round = 0
         self.tournament_active = False
         self.tournament_winner = None
+        self.lock = threading.Lock()
+        
+        # New tracking mechanisms
+        self.tournament_brackets = []
+        self.tournament_status = {
+            'total_players': 0,
+            'players_remaining': 0,
+            'current_round': 0,
+            'matches_in_progress': 0
+        }
 
     def add_player(self, player_info):
-        """Add a player to the tournament queue"""
-        if not self.tournament_active:
+        """Enhanced player addition with more robust checks"""
+        with self.lock:
+            # Check if player is already in tournament
+            if any(player_info[1] == p[1] for p in self.active_players):
+                player_info[0].send("You are already registered in the tournament.".encode())
+                return False
+
+            # Validate socket
+            try:
+                player_info[0].fileno()
+            except Exception:
+                print(f"Invalid socket for player {player_info[1]}")
+                return False
+
+            # Add to active players and update status
+            try:
+                self.active_players.append(player_info)
+                self.tournament_status['total_players'] += 1
+                self.tournament_status['players_remaining'] += 1
+                
+                # Automatically start tournament if max players reached
+                if len(self.active_players) == self.players_queue.maxsize:
+                    self._start_tournament()
+                
+                # Notify player
+                player_info[0].send(f"Registered for tournament. Current players: {len(self.active_players)}/{self.players_queue.maxsize}".encode())
+                return True
+            
+            except Exception as e:
+                print(f"Error adding player to tournament: {e}")
+                return False
+
+    def _start_tournament(self):
+        """Officially start the tournament and create initial brackets"""
+        with self.lock:
+            if self.tournament_active:
+                return
+
             self.tournament_active = True
-            self.tournament_players.clear()  # Reset players list
-            # Start tournament organization in a new thread
-            tournament_thread = threading.Thread(target=self.organize_tournament)
-            tournament_thread.start()
+            self.current_round = 1
+            self.tournament_status['current_round'] = 1
+            
+            # Shuffle players to randomize initial matchups
+            random.shuffle(self.active_players)
+            
+            # Create initial tournament brackets
+            self.tournament_brackets = [
+                self.active_players[i:i+2] 
+                for i in range(0, len(self.active_players), 2)
+            ]
+            
+            # Broadcast tournament start
+            self._broadcast_tournament_start()
+
+    def _broadcast_tournament_start(self):
+        """Send tournament start information to all players"""
+        start_message = (
+            f"Tournament Started!\n"
+            f"Total Players: {len(self.active_players)}\n"
+            f"Total Rounds: {self.max_rounds}\n"
+            f"First Round Matchups:\n"
+        )
         
-        self.players_queue.put(player_info)
-        self.tournament_players.append(player_info)
-        print(f"Player {player_info[1]} added to tournament queue")
-
-    def organize_tournament(self):
-        """Organize and run the tournament."""
-        print("Tournament organization started")
-        self.total_tournament_rounds = 0
-        tournament_winners = []
-
-        while self.tournament_active and self.total_tournament_rounds < self.max_rounds:
-            # Wait for enough players
-            while self.players_queue.qsize() < 2:
-                time.sleep(1)  # Small delay to avoid busy waiting
-                if not self.tournament_active:
-                    return
-
-            # Get two players from the queue
-            try:
-                player1 = self.players_queue.get(timeout=10)
-                player2 = self.players_queue.get(timeout=10)
-            except queue.Empty:
-                continue  # If not enough players, retry
-
-            # Notify players of their tournament match
-            try:
-                player1[0].send(f"Tournament Match: You will play against {player2[1]} in a tournament round.\n".encode())
-                player2[0].send(f"Tournament Match: You will play against {player1[1]} in a tournament round.\n".encode())
-
-                # Start the tournament game session
-                game_session = GameSession(player1, player2)
-                game_session.play_game()  # This will block until the game is complete
-
-                # Determine winner
-                if game_session.scores[player1[1]] > game_session.scores[player2[1]]:
-                    winner = player1
-                    loser = player2
-                elif game_session.scores[player2[1]] > game_session.scores[player1[1]]:
-                    winner = player2
-                    loser = player1
-                else:
-                    # In case of a tie, randomly choose
-                    import random
-                    winner, loser = random.sample([player1, player2], 2)
-
-                # Add winner back to tournament queue
-                winner[0].send("You won this tournament round! Proceeding in the tournament.\n".encode())
-                tournament_winners.append(winner)
-                self.players_queue.put(winner)
-
-                # Increment tournament rounds
-                self.total_tournament_rounds += 1
-                print(f"Tournament round {self.total_tournament_rounds} completed")
-
-            except Exception as e:
-                print(f"Tournament match error: {e}")
-
-            # Check tournament end conditions
-            if self.players_queue.qsize() < 2:
-                break
-
-        # Determine final winner based on actual tournament progression
-        if tournament_winners:
-            final_winner = tournament_winners[-1]
-            try:
-                final_winner[0].send("Congratulations! You are the tournament champion!\n".encode())
-                print(f"Tournament champion: {final_winner[1]}")
-                self.tournament_winner = final_winner
-            except Exception as e:
-                print(f"Error sending champion message: {e}")
+        # Generate matchup descriptions
+        for i, bracket in enumerate(self.tournament_brackets, 1):
+            start_message += f"Match {i}: {bracket[0][1]} vs {bracket[1][1]}\n"
         
-        # Reset tournament state
-        self.tournament_active = False
-        self.total_tournament_rounds = 0
+        # Send to all players
+        for player_info in self.active_players:
+            try:
+                player_info[0].send(start_message.encode())
+            except Exception as e:
+                print(f"Could not send start message to {player_info[1]}: {e}")
 
-    def get_tournament_winner(self):
-        """Get the tournament winner when tournament ends."""
-        return self.tournament_winner
+    def update_tournament_progress(self, winner, loser):
+        """Update tournament progress after each match"""
+        with self.lock:
+            # Remove loser from active players
+            self.active_players = [p for p in self.active_players if p[1] != loser[1]]
+            self.eliminated_players.append(loser)
+            
+            # Update tournament status
+            self.tournament_status['players_remaining'] -= 1
+            
+            # Check if tournament should progress to next round
+            if len(self.active_players) % 2 == 0:
+                self._prepare_next_round()
+            
+            # Check for tournament completion
+            if len(self.active_players) == 1:
+                self._conclude_tournament(self.active_players[0])
 
+    def _prepare_next_round(self):
+        """Prepare next round of tournament"""
+        self.current_round += 1
+        self.tournament_status['current_round'] = self.current_round
+        
+        # Recreate brackets with remaining active players
+        self.tournament_brackets = [
+            self.active_players[i:i+2] 
+            for i in range(0, len(self.active_players), 2)
+        ]
+        
+        # Broadcast round progression
+        round_message = (
+            f"Tournament Progressing to Round {self.current_round}!\n"
+            f"Players Remaining: {len(self.active_players)}\n"
+            "Next Matchups:\n"
+        )
+        
+        for i, bracket in enumerate(self.tournament_brackets, 1):
+            round_message += f"Match {i}: {bracket[0][1]} vs {bracket[1][1]}\n"
+        
+        # Send to all remaining players
+        for player_info in self.active_players:
+            try:
+                player_info[0].send(round_message.encode())
+            except Exception as e:
+                print(f"Could not send round update to {player_info[1]}: {e}")
+
+    def _conclude_tournament(self, champion):
+        """Finalize tournament and declare winner"""
+        with self.lock:
+            self.tournament_winner = champion
+            self.tournament_active = False
+            
+            # Broadcast champion
+            champion_message = (
+                "🏆 TOURNAMENT COMPLETE 🏆\n"
+                f"Champion: {champion[1]}!\n"
+                f"Total Rounds Played: {self.current_round}"
+            )
+            
+            try:
+                champion[0].send(champion_message.encode())
+            except Exception as e:
+                print(f"Could not send champion message: {e}")
+            
+            # Optional: Log tournament results
+            self._log_tournament_results()
+
+    def _log_tournament_results(self):
+        """Log tournament results (can be expanded)"""
+        print(f"Tournament Winner: {self.tournament_winner[1]}")
+        print(f"Eliminated Players: {[p[1] for p in self.eliminated_players]}")
 
 class RockPaperScissorsServer:
     def __init__(self, host='localhost', port=12345):
