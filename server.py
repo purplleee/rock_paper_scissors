@@ -174,7 +174,7 @@ class Tournament:
             if self.players_queue.qsize() < 2:
                 time.sleep(1)  # Small delay to avoid busy waiting
                 continue
-           
+        
             # Get two players from the queue
             try:
                 player1 = self.players_queue.get(timeout=10)
@@ -182,12 +182,12 @@ class Tournament:
             except queue.Empty:
                 continue  # If not enough players, retry
 
-            # Notify players of their match
+            # Notify players of their tournament match
             try:
-                player1[0].send(f"Tournament Match: You will play against {player2[1]}.\n".encode())
-                player2[0].send(f"Tournament Match: You will play against {player1[1]}.\n".encode())
+                player1[0].send(f"Tournament Match: You will play against {player2[1]} in a tournament round.\n".encode())
+                player2[0].send(f"Tournament Match: You will play against {player1[1]} in a tournament round.\n".encode())
 
-                # Start the game session
+                # Start the tournament game session
                 game_session = GameSession(player1, player2)
                 session_thread = threading.Thread(target=game_session.play_game)
                 session_thread.start()
@@ -195,19 +195,27 @@ class Tournament:
 
                 # Monitor the session to determine the winner
                 session_thread.join()  # Wait for the game to finish
-                winner = self.determine_winner(game_session)
-               
-                if winner:
-                    winner_socket, winner_username = winner
-                    winner_socket.send(f"You won this round! Proceeding in the tournament.\n".encode())
-                    self.add_player((winner_socket, winner_username))
+                
+                # Implement tournament-specific winner handling
+                if game_session.scores[player1[1]] > game_session.scores[player2[1]]:
+                    winner = player1
+                elif game_session.scores[player2[1]] > game_session.scores[player1[1]]:
+                    winner = player2
+                else:
+                    # In case of a tie, randomly choose or replay
+                    import random
+                    winner = random.choice([player1, player2])
+                
+                # Add winner back to tournament queue
+                winner[0].send("You won this tournament round! Proceeding in the tournament.\n".encode())
+                self.add_player(winner)
 
                 self.total_tournament_rounds += 1
 
             except Exception as e:
                 print(f"Tournament match error: {e}")
 
-            # If only one player remains or max rounds reached, end tournament
+            # Tournament end conditions
             if (self.players_queue.qsize() < 2 and len(self.active_sessions) == 1) or self.total_tournament_rounds >= self.max_rounds:
                 winner = self.get_tournament_winner()
                 if winner:
@@ -228,7 +236,7 @@ class Tournament:
     def add_player(self, player_info):
         """Add a player to the tournament queue"""
         self.players_queue.put(player_info)             
-        
+
 
 class RockPaperScissorsServer:
     def __init__(self, host='localhost', port=12345):
@@ -326,6 +334,7 @@ class RockPaperScissorsServer:
             try:
                 # Ensure enough players for a normal game
                 if self.waiting_players.qsize() >= 2:
+                    # Get two players from the queue
                     player1 = self.waiting_players.get()
                     player2 = self.waiting_players.get()
                     
@@ -340,11 +349,12 @@ class RockPaperScissorsServer:
                     
                     # Keep track of active sessions
                     self.active_sessions.append(session_thread)
+                
+                # Small sleep to prevent tight loop and reduce CPU usage
+                time.sleep(1)
+            
             except Exception as e:
                 print(f"Error in player matching: {e}")
-            
-            # Small sleep to prevent tight loop
-            time.sleep(1)
 
     def start(self):
     
@@ -352,6 +362,10 @@ class RockPaperScissorsServer:
             # Start tournament thread
             tournament_thread = threading.Thread(target=self.tournament.organize_tournament)
             tournament_thread.start()
+            
+            # Start normal game matching thread
+            match_players_thread = threading.Thread(target=self.match_players)
+            match_players_thread.start()
         
             print(f"Server started on {self.host}:{self.port}")
             self.server_socket.listen()
