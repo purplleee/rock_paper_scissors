@@ -55,7 +55,7 @@ class AuthenticationManager:
             'total_games': 0,
             'wins': 0,
             'losses': 0,
-            'rank': 1000  # Initial ranking points
+            'rank': 1000  # Starting rank
         }
         
         # Save updated users
@@ -105,10 +105,11 @@ class AuthenticationManager:
         users[username]['total_games'] += 1
         if won:
             users[username]['wins'] += 1
-            # Simple Elo-like ranking update
+            # Simple ranking increase
             users[username]['rank'] += 20
         else:
             users[username]['losses'] += 1
+            # Prevent rank from going below 1000
             users[username]['rank'] = max(1000, users[username]['rank'] - 10)
         
         # Save updated users

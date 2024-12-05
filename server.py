@@ -138,16 +138,84 @@ class GameSession:
                     pass
 
     def get_series_winner(self):
-        """Determine and communicate the overall game winner"""
+        auth_manager = AuthenticationManager()
+    
         if self.scores[self.usernames[0]] > self.scores[self.usernames[1]]:
             self.players[0].send(f"Game Over! You won the series {self.scores[self.usernames[0]]}-{self.scores[self.usernames[1]]}".encode())
             self.players[1].send(f"Game Over! You lost the series {self.scores[self.usernames[0]]}-{self.scores[self.usernames[1]]}".encode())
+        
+            # Update user stats
+            auth_manager.update_user_stats(self.usernames[0], True)
+            auth_manager.update_user_stats(self.usernames[1], False)
+    
         elif self.scores[self.usernames[1]] > self.scores[self.usernames[0]]:
             self.players[0].send(f"Game Over! You lost the series {self.scores[self.usernames[1]]}-{self.scores[self.usernames[0]]}".encode())
             self.players[1].send(f"Game Over! You won the series {self.scores[self.usernames[1]]}-{self.scores[self.usernames[0]]}".encode())
+        
+            # Update user stats
+            auth_manager.update_user_stats(self.usernames[0], False)
+            auth_manager.update_user_stats(self.usernames[1], True)
+    
         else:
             for player in self.players:
                 player.send("Game Over! The series is a tie!".encode())
+                
+class Tournament:
+    def __init__(self):
+        self.players_queue = queue.Queue()
+        self.active_sessions = []
+
+    def add_player(self, player_info):
+        """Add a player to the tournament."""
+        self.players_queue.put(player_info)
+
+    def organize_tournament(self):
+        """Organize and run the tournament."""
+        while True:
+            # Wait for enough players
+            if self.players_queue.qsize() < 2:
+                time.sleep(1)  # Small delay to avoid busy waiting
+                continue
+           
+            # Get two players from the queue
+            player1 = self.players_queue.get()
+            player2 = self.players_queue.get()
+
+            # Notify players of their match
+            player1[0].send(f"Match found! You will play against {player2[1]}.\n".encode())
+            player2[0].send(f"Match found! You will play against {player1[1]}.\n".encode())
+
+            # Start the game session
+            game_session = GameSession(player1, player2)
+            session_thread = threading.Thread(target=game_session.play_game)
+            session_thread.start()
+            self.active_sessions.append((session_thread, player1, player2))
+
+            # Monitor the session to determine the winner
+            session_thread.join()  # Wait for the game to finish
+            winner = self.determine_winner(game_session)
+           
+            if winner:
+                winner_socket, winner_username = winner
+                winner_socket.send("You won this round! Proceeding to the next match...\n".encode())
+                self.add_player((winner_socket, winner_username))
+
+            # If only one player remains, declare them the tournament winner
+            if self.players_queue.qsize() < 2 and len(self.active_sessions) == 1:
+                winner = self.determine_winner(game_session)
+                if winner:
+                    winner_socket, winner_username = winner
+                    winner_socket.send("Congratulations! You are the tournament champion!\n".encode())
+                break
+
+    def determine_winner(self, game_session):
+        """Determine the winner of a game session."""
+        scores = game_session.scores
+        if scores[game_session.usernames[0]] > scores[game_session.usernames[1]]:
+            return game_session.players[0], game_session.usernames[0]
+        elif scores[game_session.usernames[1]] > scores[game_session.usernames[0]]:
+            return game_session.players[1], game_session.usernames[1]
+        return None                
 
 class RockPaperScissorsServer:
     def __init__(self, host='localhost', port=12345):
@@ -156,6 +224,9 @@ class RockPaperScissorsServer:
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((self.host, self.port))
+        
+        # Create tournament instance
+        self.tournament = Tournament()
         
         # Queue for waiting players
         self.waiting_players = queue.Queue()
@@ -203,9 +274,17 @@ class RockPaperScissorsServer:
                 else:
                     client_socket.send("Invalid action. Use LOGIN or REGISTER".encode())
             
-            # After authentication, send waiting message and proceed with player matching
-            client_socket.send("Waiting for another player to join...".encode())
-            self.waiting_players.put((client_socket, username))
+            # After authentication, send tournament participation prompt
+            client_socket.send("Do you want to join the tournament? (yes/no)".encode())
+            
+            response = client_socket.recv(1024).decode().strip().lower()
+            if response == "yes":
+                self.tournament.add_player((client_socket, username))
+                client_socket.send("You have been added to the tournament. Waiting for other players...\n".encode())
+            else:
+                client_socket.send("Waiting for another player to join...\n".encode())
+                self.waiting_players.put((client_socket, username))
+        
         except Exception as e:
             print(f"Authentication error: {e}")
             client_socket.close()
@@ -237,34 +316,37 @@ class RockPaperScissorsServer:
             time.sleep(1)
 
     def start(self):
+    
         try:
-            # Start player matching thread
-            matching_thread = threading.Thread(target=self.match_players)
-            matching_thread.start()
-            
+            # Start tournament thread
+            tournament_thread = threading.Thread(target=self.tournament.organize_tournament)
+            tournament_thread.start()
+        
             print(f"Server started on {self.host}:{self.port}")
             self.server_socket.listen()
-            
+
             while self.is_running:
                 try:
                     # Accept incoming connections
                     client_socket, address = self.server_socket.accept()
                     print(f"Connection from {address}")
-                    
+
                     # Handle each connection in a separate thread
                     connection_thread = threading.Thread(
                         target=self.handle_player_connection, 
                         args=(client_socket,)
                     )
                     connection_thread.start()
-                
+
                 except Exception as e:
                     if self.is_running:
                         print(f"Error accepting connection: {e}")
+
         except KeyboardInterrupt:
             print("\nServer shutting down...")
         finally:
             self.shutdown()
+
 
     def shutdown(self):
         """Gracefully shutdown the server"""
